@@ -1,0 +1,89 @@
+import re
+from typing import Any, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+
+class AgentState(TypedDict, total=False):
+    messages: list[dict[str, Any]]
+    memory: dict[str, str]
+
+
+class MemoryAgent:
+    def __init__(self) -> None:
+        self.memory: dict[str, str] = {}
+        self.graph = self._build_graph()
+
+    def _build_graph(self):
+        builder = StateGraph(AgentState)
+        builder.add_node("agent", self._agent_node)
+        builder.add_edge(START, "agent")
+        builder.add_edge("agent", END)
+        return builder.compile()
+
+    def _agent_node(self, state: AgentState) -> AgentState:
+        messages = state.get("messages", [])
+        memory = dict(state.get("memory", {}))
+
+        if not messages:
+            response = "Hello! I can remember simple facts about you."
+            return {"messages": [{"role": "assistant", "content": response}], "memory": memory}
+
+        last_message = messages[-1]
+        if isinstance(last_message, dict):
+            user_text = str(last_message.get("content", ""))
+        else:
+            user_text = str(getattr(last_message, "content", ""))
+
+        normalized_text = user_text.strip()
+        lower_text = normalized_text.lower()
+
+        if match := re.search(r"favorite color is ([a-zA-Z]+)", normalized_text, flags=re.IGNORECASE):
+            memory["favorite_color"] = match.group(1).strip().lower()
+            response = f"I’ll remember that your favorite color is {memory['favorite_color']}."
+        elif match := re.search(r"my name is ([a-zA-Z]+)", normalized_text, flags=re.IGNORECASE):
+            memory["name"] = match.group(1).strip().title()
+            response = f"Nice to meet you, {memory['name']}!"
+        elif "what color" in lower_text and "like" in lower_text:
+            color = memory.get("favorite_color")
+            if color:
+                response = f"You like {color}."
+            else:
+                response = "I don’t know your favorite color yet."
+        elif "what is my name" in lower_text:
+            name = memory.get("name")
+            if name:
+                response = f"Your name is {name}."
+            else:
+                response = "I don’t know your name yet."
+        else:
+            response = "I’m a simple memory-enabled agent. Tell me something personal and I’ll remember it."
+
+        return {
+            "messages": [{"role": "assistant", "content": response}],
+            "memory": memory,
+        }
+
+    def invoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        merged_state: AgentState = {
+            "messages": list(state.get("messages", [])),
+            "memory": {**self.memory, **state.get("memory", {})},
+        }
+        result = self.graph.invoke(merged_state)
+        self.memory.update(result.get("memory", {}))
+        return result
+
+
+def build_agent() -> MemoryAgent:
+    return MemoryAgent()
+
+
+if __name__ == "__main__":
+    agent = build_agent()
+    print("Simple LangGraph memory agent is ready. Type 'exit' to quit.")
+    while True:
+        user_input = input("You: ").strip()
+        if user_input.lower() in {"exit", "quit"}:
+            break
+        reply = agent.invoke({"messages": [{"role": "user", "content": user_input}]})
+        print("Agent:", reply["messages"][-1]["content"])
